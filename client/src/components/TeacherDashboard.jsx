@@ -296,6 +296,9 @@ export default function TeacherDashboard({
                 Performance Chart
               </h3>
               <p style={{ fontSize: '0.75rem', color: '#a1a1aa', margin: 0 }}>This week's student comprehension rate</p>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', marginTop: '0.25rem', fontSize: '0.625rem', fontWeight: 700, color: '#eab308', fontFamily: 'var(--font-mono)', letterSpacing: '0.05em' }}>
+                📊 Stats computed from live session data
+              </span>
             </div>
             <div style={{ display: 'flex', gap: '0.75rem', fontSize: '0.6875rem', fontWeight: 600 }}>
               <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', color: '#a1a1aa' }}>

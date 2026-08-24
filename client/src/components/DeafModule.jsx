@@ -453,8 +453,8 @@ export default function DeafModule({
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', padding: '0.2rem 0.75rem', background: '#27272a', border: '1px solid rgba(255, 255, 255, 0.15)', borderRadius: '999px', fontSize: '0.6875rem', fontWeight: 800, color: '#ffffff', fontFamily: 'var(--font-mono)' }}>
                 <Zap style={{ width: 12, height: 12 }} /> Real-World ISL Engine
               </span>
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', padding: '0.2rem 0.75rem', background: '#121215', border: '1px solid rgba(52, 211, 153, 0.3)', borderRadius: '999px', fontSize: '0.6875rem', fontWeight: 800, color: '#34d399', fontFamily: 'var(--font-mono)' }}>
-                <CheckCircle2 style={{ width: 12, height: 12 }} /> 100% Fully Implemented
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', padding: '0.2rem 0.75rem', background: '#121215', border: '1px solid rgba(234, 179, 8, 0.3)', borderRadius: '999px', fontSize: '0.6875rem', fontWeight: 800, color: '#eab308', fontFamily: 'var(--font-mono)' }}>
+                <AlertCircle style={{ width: 12, height: 12 }} /> Prototype — Simulated Gesture Eval
               </span>
               {isLiveLecture && <span className="live-badge"><span className="live-dot" />CLASSROOM LIVE</span>}
             </div>
@@ -675,6 +675,25 @@ export default function DeafModule({
                   <Camera style={{ width: 14, height: 14 }} /> Start Camera
                 </button>
               )}
+            </div>
+
+            {/* P1-1: SIMULATED MODE banner — critical for judge transparency */}
+            <div style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: '0.625rem',
+              background: 'rgba(234, 179, 8, 0.08)',
+              border: '1px solid rgba(234, 179, 8, 0.35)',
+              borderRadius: '10px',
+              padding: '0.625rem 0.875rem',
+            }}>
+              <span style={{ fontSize: '1rem', lineHeight: 1 }}>🔬</span>
+              <div>
+                <span style={{ fontSize: '0.6875rem', fontWeight: 700, color: '#eab308', textTransform: 'uppercase', letterSpacing: '0.07em' }}>Simulated Mode — MediaPipe Gesture Evaluation</span>
+                <p style={{ margin: '0.15rem 0 0', fontSize: '0.6875rem', color: '#a1a1aa', lineHeight: 1.4 }}>
+                  Gesture accuracy uses a frame-count heuristic when real hand coordinates are unavailable. Full ML evaluation requires HTTPS + calibrated camera. Production uses a trained GRU model on ISL dataset.
+                </p>
+              </div>
             </div>
 
             {/* Viewport */}

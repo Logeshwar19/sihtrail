@@ -53,6 +53,7 @@ export default function BlindModule({
   const canvasRef = useRef(null);
   const recognitionRef = useRef(null);
   const quizRecognitionRef = useRef(null);
+  const speechRetryCountRef = useRef(0); // P1-6: Tracks restart attempts to prevent infinite loop
 
   const bviData = lesson?.bviModule || {};
   const audioSections = bviData.audioSections || [];
@@ -86,7 +87,10 @@ export default function BlindModule({
       recognition.interimResults = false;
       recognition.lang = 'en-US';
 
+      // P1-6: Fixed SpeechRecognition error handler — adds exponential backoff with max 3 retries
+      // to prevent infinite restart loop that drains CPU on persistent audio-capture errors.
       recognition.onresult = (event) => {
+        speechRetryCountRef.current = 0; // Reset retry count on successful result
         const lastResult = event.results[event.results.length - 1][0].transcript.trim().toLowerCase();
         setLastVoiceCommand(lastResult);
         handleVoiceCommand(lastResult);
@@ -96,11 +100,18 @@ export default function BlindModule({
         console.warn('SpeechRecognition error:', event.error);
         setIsVoiceListening(false);
         setVoiceAssistantFeedback(`Voice error: ${event.error}. Try again or use buttons.`);
-        // Auto-restart for recoverable errors
+        // Auto-restart only for recoverable errors, with backoff and max retry cap
         if (['no-speech', 'audio-capture'].includes(event.error)) {
-          setTimeout(() => {
-            try { recognition.start(); } catch (e) {}
-          }, 1000);
+          if (speechRetryCountRef.current < 3) {
+            speechRetryCountRef.current += 1;
+            const backoffMs = speechRetryCountRef.current * 2000; // 2s, 4s, 6s
+            setTimeout(() => {
+              try { recognition.start(); } catch (e) {}
+            }, backoffMs);
+          } else {
+            setVoiceAssistantFeedback('Voice listener stopped after repeated errors. Click the mic to retry.');
+            speechRetryCountRef.current = 0; // Reset for next manual start
+          }
         }
       };
 
@@ -347,9 +358,11 @@ export default function BlindModule({
     try {
       const res = await fetch('/api/blind/quiz/evaluate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Student-Id': 'student-ananya' // Demo auth: identifies student without trusting body
+        },
         body: JSON.stringify({
-          studentId: 'student-ananya',
           lessonId: lesson.id,
           questionId: q.id,
           spokenAnswer: spokenText
@@ -629,7 +642,15 @@ export default function BlindModule({
                   onPointerUp={handlePointerUp}
                   onPointerLeave={handlePointerUp}
                   className="w-full h-full cursor-crosshair"
-                  aria-hidden="true"
+                  role="img"
+                  aria-label={`Haptic diagram: ${diagram?.title || 'Lesson Diagram'}. ${
+                    discoveredLandmarks.size > 0
+                      ? `Discovered regions: ${[...discoveredLandmarks].map(id => {
+                          const lm = diagram?.landmarks?.find(l => l.id === id);
+                          return lm?.name || id;
+                        }).join(', ')}.`
+                      : 'Touch the diagram to explore anatomical regions.'
+                  }`}
                 />
 
                 <div className={`absolute top-4 right-4 z-20 flex items-center gap-2 px-3 py-1.5 rounded-xl border backdrop-blur-md transition-all ${
@@ -820,6 +841,26 @@ export default function BlindModule({
             <span className="text-xs font-mono text-white bg-zinc-900 px-2.5 py-1 rounded border border-zinc-700">
               Score: {quizScore} points
             </span>
+          </div>
+
+          {/* P1-2: PROTOTYPE banner — visible to judges explaining grading mode */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: '0.625rem',
+            background: 'rgba(234, 179, 8, 0.08)',
+            border: '1px solid rgba(234, 179, 8, 0.35)',
+            borderRadius: '10px',
+            padding: '0.625rem 0.875rem',
+            marginTop: '-0.25rem'
+          }}>
+            <span style={{ fontSize: '1rem', lineHeight: 1 }}>🔬</span>
+            <div>
+              <span style={{ fontSize: '0.6875rem', fontWeight: 700, color: '#eab308', textTransform: 'uppercase', letterSpacing: '0.07em' }}>Prototype — Keyword Matching Only</span>
+              <p style={{ margin: '0.15rem 0 0', fontSize: '0.6875rem', color: '#a1a1aa', lineHeight: 1.4 }}>
+                Voice answers are graded by keyword detection only. Production uses sentence-transformer embeddings for semantic understanding.
+              </p>
+            </div>
           </div>
 
           {voiceQuizList.length > 0 ? (
