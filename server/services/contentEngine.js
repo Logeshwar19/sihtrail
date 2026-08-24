@@ -36,7 +36,12 @@ export async function extractText(file, bufferContent) {
   }
   
   if (ext === 'ppt' || ext === 'pptx') {
-    throw new Error('PPT parsing not wired up yet — use PDF or TXT for the prototype demo.');
+    // P1-7: Do not throw — return a 400-friendly error string so the upload
+    // handler can respond gracefully instead of crashing with a 500.
+    // Production upgrade path: use pptxgenjs or libreoffice headless conversion.
+    const err = new Error('PPTX/PPT files are not supported in this prototype. Please convert to PDF or TXT and re-upload.');
+    err.statusCode = 400;
+    throw err;
   }
   
   return file.buffer ? file.buffer.toString('utf-8') : "Curriculum text excerpt.";

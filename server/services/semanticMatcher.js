@@ -5,6 +5,29 @@
  * cosine-similarity semantic vector search strictly against the active lesson's chunks.
  */
 
+// ─── Per-Lesson Vocabulary & Chunk Vector Cache (P2-1) ────────────────────────
+// Avoids O(N×M) vocabulary rebuild on every match request. Keyed by lessonId.
+const _lessonVocabCache = new Map();
+
+function getLessonCacheEntry(lessonId, rawChunks) {
+  if (_lessonVocabCache.has(lessonId)) return _lessonVocabCache.get(lessonId);
+
+  const allChunkText = rawChunks.map(c => c.text).join(' ');
+  const vocabWords = Array.from(new Set(
+    allChunkText.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length >= 3)
+  ));
+  const chunkVectors = rawChunks.map(c => textToVector(c.text, vocabWords));
+
+  const entry = { vocabWords, chunkVectors, rawChunks };
+  _lessonVocabCache.set(lessonId, entry);
+  return entry;
+}
+
+/** Call when a lesson is updated/deleted to invalidate its cached vectors. */
+export function invalidateLessonCache(lessonId) {
+  _lessonVocabCache.delete(lessonId);
+}
+
 // Comprehensive Concept Knowledge Graph for ISL Gloss Normalization
 export const GLOSS_SEMANTIC_DICTIONARY = {
   "PUMP": {
@@ -249,19 +272,26 @@ export function matchSignToLesson(gloss, currentLesson, similarityThreshold = 0.
     };
   }
 
-  // Build shared vocabulary space
-  const allText = `${normalized.queryText} ${rawChunks.map(c => c.text).join(' ')}`;
-  const vocabWords = Array.from(new Set(
-    allText.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length >= 3)
-  ));
+  // Use cached vocabulary + chunk vectors when available (P2-1)
+  const cached = getLessonCacheEntry(currentLesson.id, rawChunks);
+  const vocabWords = cached.vocabWords;
 
-  const queryVec = textToVector(normalized.queryText, vocabWords);
+  // Extend vocab with query-specific terms (cheap — just unique new words)
+  const queryTokens = normalized.queryText.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length >= 3);
+  const extendedVocab = [...vocabWords];
+  const vocabSet = new Set(vocabWords);
+  queryTokens.forEach(t => { if (!vocabSet.has(t)) extendedVocab.push(t); });
+
+  const queryVec = textToVector(normalized.queryText, extendedVocab);
 
   let bestScore = 0;
   let bestChunk = null;
 
-  rawChunks.forEach(chunkObj => {
-    const chunkVec = textToVector(chunkObj.text, vocabWords);
+  rawChunks.forEach((chunkObj, idx) => {
+    // Use cached chunk vector if vocab hasn't grown, otherwise recompute
+    const chunkVec = extendedVocab.length === vocabWords.length
+      ? cached.chunkVectors[idx]
+      : textToVector(chunkObj.text, extendedVocab);
     let score = cosineSimilarity(queryVec, chunkVec);
 
     // Hybrid keyword boost for canonical terms

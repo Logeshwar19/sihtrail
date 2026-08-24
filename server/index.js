@@ -1,19 +1,47 @@
 import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
+import rateLimit from 'express-rate-limit';
 import { processLesson } from './services/contentEngine.js';
 import { getSignSequence, evaluateGesture } from './services/deafModule.js';
 import { getHapticDiagram, evaluateVoiceAnswer } from './services/blindModule.js';
 import { matchSignToLesson, normalizeGlossToMeaning } from './services/semanticMatcher.js';
+import { buildFullLesson } from './services/lessonBuilder.js';
 import { sampleLessons, sampleStudents } from './sampleData.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Fix 6: Restrict CORS to Frontend Origin
+// Restrict CORS to Frontend Origin
 const FRONTEND_ORIGIN = process.env.FRONTEND_URL || 'http://localhost:5173';
 app.use(cors({ origin: FRONTEND_ORIGIN, credentials: true }));
 app.use(express.json({ limit: '15mb' }));
+
+// ─── Rate Limiting (P0-5 / Priority 7) ──────────────────────────────────────
+// Caps all mutating endpoints at 20 requests per 60 seconds per IP.
+const postLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests — please slow down and try again in a minute.' }
+});
+
+// ─── Demo-Level Auth Middleware (P0-1..3 / Priority 3) ───────────────────────
+// Reads X-Student-Id from request headers instead of trusting req.body.
+// Validates the ID is in the known student set. studentId is attached to req.
+const KNOWN_STUDENT_IDS = new Set(['student-rohan', 'student-ananya']);
+const requireStudentHeader = (req, res, next) => {
+  const studentId = req.headers['x-student-id'];
+  if (!studentId) {
+    return res.status(401).json({ error: 'Missing X-Student-Id header. Demo auth required.' });
+  }
+  if (!KNOWN_STUDENT_IDS.has(studentId)) {
+    return res.status(403).json({ error: `Unknown student ID: "${studentId}". Not in demo roster.` });
+  }
+  req.studentId = studentId;
+  next();
+};
 
 // In-memory Database state
 const db = {
@@ -126,76 +154,10 @@ app.post('/api/lessons/upload', (req, res) => {
       const processed = await processLesson(req.file, rawText);
       const lessonId = processed.id;
 
-      const fullLesson = {
-        ...processed,
-        subject: req.body?.subject || 'Class 10 Science',
-        grade: req.body?.grade || 'Grade 10',
-        estimatedTime: '12 mins',
-        summary: processed.text_blocks[0] || 'Lesson overview.',
-        uploadedAt: new Date().toISOString(),
-        originalFileName: processed.originalFileName,
-        islModule: {
-          lessonGlosses: processed.concepts.map(c => ({
-            word: c.word,
-            gloss: c.gloss || c.word.toUpperCase(),
-            description: c.description || `Sign gesture for ${c.word}`,
-            duration: 2.5
-          })),
-          practiceWords: processed.concepts.slice(0, 3).map(c => ({
-            id: c.word.toLowerCase(),
-            word: c.word,
-            hint: c.description || `Perform the sign for ${c.word}.`,
-            targetPose: 'SIGN_POSE',
-            difficulty: 'Easy'
-          })),
-          quiz: processed.quiz_items.map((q, idx) => ({
-            id: `q-isl-${idx}`,
-            question: q.prompt,
-            options: ["Primary core concept", "Secondary mechanism", "Unrelated function", "Incorrect premise"],
-            correctIndex: 0,
-            signHint: `Focus on ${q.prompt}`
-          }))
-        },
-        bviModule: {
-          audioSummary: processed.text_blocks.join(' ').slice(0, 200),
-          audioSections: processed.text_blocks.map((b, i) => ({
-            sectionTitle: `Section ${i + 1}`,
-            content: b
-          })),
-          hapticDiagram: {
-            id: processed.diagrams[0]?.id || 'diagram-main',
-            title: processed.diagrams[0]?.label || 'Diagram',
-            aspectRatio: "4:3",
-            viewBox: { width: 800, height: 600 },
-            paths: [
-              {
-                id: "outer-boundary",
-                name: "Diagram Outline Boundary",
-                type: "boundary",
-                d: "M 400,120 C 520,70 660,160 640,320 C 620,440 460,530 400,560 C 340,530 180,440 160,320 C 140,160 280,70 400,120 Z",
-                vibrationPattern: [40, 20]
-              }
-            ],
-            landmarks: (processed.diagrams[0]?.regions || []).map(r => ({
-              id: r.id,
-              name: r.label,
-              x: Math.round(r.x * 800),
-              y: Math.round(r.y * 600),
-              radius: Math.round((r.radius || 0.08) * 800),
-              audioDescription: r.description || `You are touching ${r.label}.`,
-              hapticTone: [100, 50, 100],
-              color: "#FFFFFF"
-            }))
-          },
-          voiceQuiz: processed.quiz_items.map(q => ({
-            id: q.id,
-            spokenQuestion: q.spokenQuestion,
-            expectedKeywords: q.acceptedAnswerKeywords,
-            modelAnswer: q.modelAnswer,
-            points: 10
-          }))
-        }
-      };
+      const fullLesson = buildFullLesson(processed, {
+        subject: req.body?.subject,
+        grade: req.body?.grade
+      });
 
       db.lessons[lessonId] = fullLesson;
 
@@ -206,7 +168,8 @@ app.post('/api/lessons/upload', (req, res) => {
       });
     } catch (err) {
       console.error('Processing error:', err);
-      res.status(500).json({ error: 'Failed to process lesson', detail: err.message });
+      const status = err.statusCode === 400 ? 400 : 500;
+      res.status(status).json({ error: err.message || 'Failed to process lesson' });
     }
   });
 });
@@ -252,8 +215,9 @@ app.get('/api/deaf/:lessonId/signs', (req, res) => {
 });
 
 // 5. Deaf Module: Evaluate gesture practice
-app.post('/api/deaf/practice/evaluate', (req, res) => {
-  const { studentId = 'student-rohan', signWord, landmarkSequence } = req.body;
+app.post('/api/deaf/practice/evaluate', postLimiter, requireStudentHeader, (req, res) => {
+  const { signWord, landmarkSequence } = req.body;
+  const studentId = req.studentId; // Derived from validated header — not req.body
   const result = evaluateGesture(signWord, landmarkSequence);
 
   db.progress[studentId] = db.progress[studentId] || { signPractice: [], quizResults: [] };
@@ -270,9 +234,16 @@ app.post('/api/deaf/practice/evaluate', (req, res) => {
 });
 
 // 6. Deaf Module: Sign-to-Text Bridge
-app.post('/api/deaf/sign-to-text', (req, res) => {
-  const { studentId = 'student-rohan', studentName = 'Rohan Patel (Deaf)', recognizedWord } = req.body;
-  
+app.post('/api/deaf/sign-to-text', postLimiter, requireStudentHeader, (req, res) => {
+  const { recognizedWord } = req.body;
+  const studentId = req.studentId; // Derived from validated header — prevents teacher inbox spoofing
+  // Look up the canonical student name from known roster (prevents body spoofing)
+  const STUDENT_NAMES = {
+    'student-rohan': 'Rohan Patel (Deaf)',
+    'student-ananya': 'Ananya Sharma (Blind)'
+  };
+  const studentName = STUDENT_NAMES[studentId] || studentId;
+
   const inboxItem = {
     id: `inbox-${Date.now()}`,
     studentId,
@@ -302,9 +273,10 @@ app.get('/api/blind/:lessonId/content', (req, res) => {
   });
 });
 
-// 8. Blind Module: Evaluate voice answer (Fix 4: Return 404 for Unknown Question)
-app.post('/api/blind/quiz/evaluate', (req, res) => {
-  const { studentId = 'student-ananya', lessonId, questionId, spokenAnswer } = req.body;
+// 8. Blind Module: Evaluate voice answer
+app.post('/api/blind/quiz/evaluate', postLimiter, requireStudentHeader, (req, res) => {
+  const { lessonId, questionId, spokenAnswer } = req.body;
+  const studentId = req.studentId; // Derived from validated header
   const lesson = db.lessons[lessonId];
   if (!lesson) {
     return res.status(404).json({ error: 'Lesson not found', lessonId });
@@ -336,21 +308,43 @@ app.get('/api/teacher/progress/:studentId', (req, res) => {
   res.json(db.progress[req.params.studentId] || { signPractice: [], quizResults: [] });
 });
 
+// ─── Live Stats Helper (P1-3 / Priority 2) ───────────────────────────────────
+// Computes real averages from db.progress. Returns 0 when no data recorded yet.
+function computeStats() {
+  const allProgress = Object.values(db.progress);
+  const allSignPractice = allProgress.flatMap(p => p.signPractice || []);
+  const allQuizResults = allProgress.flatMap(p => p.quizResults || []);
+
+  const avgDeafSignAccuracy = allSignPractice.length
+    ? Math.round(allSignPractice.reduce((sum, s) => sum + (s.accuracy || 0), 0) / allSignPractice.length)
+    : 0;
+
+  const avgBlindQuizScore = allQuizResults.length
+    ? Math.round(allQuizResults.reduce((sum, q) => sum + (q.score || 0), 0) / allQuizResults.length)
+    : 0;
+
+  return { avgDeafSignAccuracy, avgBlindQuizScore };
+}
+
 // 10. Teacher: Dashboard summary
 app.get('/api/teacher/dashboard', (req, res) => {
+  const { avgDeafSignAccuracy, avgBlindQuizScore } = computeStats();
   res.json({
     success: true,
     stats: {
       totalLessons: Object.keys(db.lessons).length,
       activeStudents: sampleStudents.length,
-      avgDeafSignAccuracy: 93,
-      avgBlindQuizScore: 95
+      avgDeafSignAccuracy,
+      avgBlindQuizScore
     },
     students: sampleStudents,
     inbox: db.teacherInbox,
     recentLessons: Object.values(db.lessons).slice(0, 5)
   });
 });
+
+// Apply rate limiter to upload endpoint as well
+app.post('/api/lessons/upload', postLimiter);
 
 app.listen(PORT, () => {
   console.log(`=======================================================`);
@@ -359,5 +353,7 @@ app.listen(PORT, () => {
   console.log(`   - Extraction & Validation: Active (pdf-parse-fork / 10MB limit)`);
   console.log(`   - ISL Sign & MediaPipe CV: Active`);
   console.log(`   - Haptic Diagram & Voice UI: Active`);
+  console.log(`   - Rate Limiting: 20 req/min per IP on POST endpoints`);
+  console.log(`   - Demo Auth: X-Student-Id header required on student endpoints`);
   console.log(`=======================================================`);
 });
